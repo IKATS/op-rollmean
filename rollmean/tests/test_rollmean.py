@@ -19,7 +19,7 @@ import unittest
 
 import numpy as np
 
-from ikats.algo.core.rollmean.rollmean_computation import rollmean, Alignment, rollmean_tsuid, rollmean_ts_list, \
+from ikats.algo.rollmean.rollmean_computation import rollmean, Alignment, rollmean_tsuid, rollmean_ts_list, \
     rollmean_ds
 from ikats.core.resource.api import IkatsApi
 from ikats.core.resource.client import TemporalDataMgr
