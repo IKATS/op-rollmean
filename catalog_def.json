@@ -1,9 +1,9 @@
 {
-  "name": "Rollmean",
+  "name": "rollmean",
   "label": "Rollmean",
   "description": "The implementation of the moving average with the rollmean function from ikats",
   "family": "Preprocessing_TS__Cleaning",
-  "entry_point": "ikats.algo.rollmean::rollmean_ds",
+  "entry_point": "rollmean.rollmean_computation::rollmean_ds",
   "inputs": [
     {
       "name": "dsname",
