@@ -1,0 +1,49 @@
+{
+  "name": "rollmean",
+  "label": "Rollmean",
+  "description": "The implementation of the moving average with the rollmean function from ikats",
+  "family": "Preprocessing_TS__Cleaning",
+  "entry_point": "rollmean.rollmean_computation::rollmean_ds",
+  "inputs": [
+    {
+      "name": "dsname",
+      "label": "DSname",
+      "description": "The name of the dataset where rollmean is applied",
+      "type": "ds_name"
+    }
+  ],
+  "parameters": [
+    {
+      "name": "period",
+      "description": "the value defining the resampling period (unit : ms)",
+      "type": "number",
+      "label": "Period"
+    },
+    {
+      "name": "window_period",
+      "description": "The duration of the sliding window (in ms). Mutually exclusive with the parameter 'Window size'",
+      "type": "number",
+      "label": "Window period"
+    },
+    {
+      "name": "window_size",
+      "description": "The size of the sliding window (in number of points). Mutually exclusive with the parameter 'Window period'",
+      "type": "number",
+      "label": "Window size"
+    },
+    {
+      "name": "alignment",
+      "description": "The result alignment ('left' coded by 1,'center' coded by 2,'right' coded by 3), optional value, default is 2",
+      "type": "number",
+      "label": "Alignment"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "result",
+      "label": "TS list",
+      "description": "The reference to the TS resulting from the rollmean operation: note that dict result is filled only with the key 'tsuid': the 'funcId' is undefined in current version.",
+      "type": "ts_list"
+    }
+  ]
+}
