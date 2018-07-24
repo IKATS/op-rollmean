@@ -22,7 +22,6 @@ import numpy as np
 from ikats.algo.rollmean.rollmean_computation import rollmean, Alignment, rollmean_tsuid, rollmean_ts_list, \
     rollmean_ds
 from ikats.core.resource.api import IkatsApi
-from ikats.core.resource.client import TemporalDataMgr
 
 LOGGER = logging.getLogger()
 # Log format
@@ -105,10 +104,6 @@ def gen_ts(ts_id):
     return {"tsuid": result['tsuid'], "funcId": fid}
 
 
-# Temporal data manager
-TDM = TemporalDataMgr()
-
-
 class TestRollmean(unittest.TestCase):
     """
     Test the rollmean algorithm
@@ -142,22 +137,22 @@ class TestRollmean(unittest.TestCase):
         try:
 
             window_size = 6
-            results_1 = rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_size=window_size,
+            results_1 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=window_size,
                                        alignment=Alignment.left, save=False)
             self.assertEqual(len(results_1), len(TS1_DATA) - window_size + 1)
 
             window_size = 3
-            results_2 = rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_size=window_size,
+            results_2 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=window_size,
                                        alignment=Alignment.left, save=False)
             self.assertEqual(len(results_2), len(TS1_DATA) - window_size + 1)
 
             window_period = 3000
-            results_3 = rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_period=window_period,
+            results_3 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=window_period,
                                        alignment=Alignment.left, save=False)
             self.assertEqual(len(results_3), len(TS1_DATA) - window_period / 1000 + 1)
 
             window_period = 6000
-            results_4 = rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_period=window_period,
+            results_4 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=window_period,
                                        alignment=Alignment.left, save=False)
             self.assertEqual(len(results_4), len(TS1_DATA) - window_period / 1000 + 1)
 
@@ -215,7 +210,7 @@ class TestRollmean(unittest.TestCase):
 
             # Period and size set
             with self.assertRaises(ValueError):
-                rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_size=5, window_period=5,
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=5, window_period=5,
                                alignment=Alignment.left)
 
             # size = 0
@@ -228,20 +223,20 @@ class TestRollmean(unittest.TestCase):
 
             # size too big
             with self.assertRaises(ValueError):
-                rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_period=(TS1_DATA[-1][0] - TS1_DATA[0][0]),
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=(TS1_DATA[-1][0] - TS1_DATA[0][0]),
                                alignment=Alignment.left)
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_size='ttrtr', alignment=Alignment.left)
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size='ttrtr', alignment=Alignment.left)
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_period='ttrtr', alignment=Alignment.left)
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period='ttrtr', alignment=Alignment.left)
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tdm=TDM, tsuid=ts_info['tsuid'], window_period=500, alignment="wrong")
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=500, alignment="wrong")
 
             # wrong value
             with self.assertRaises(TypeError):
@@ -263,7 +258,7 @@ class TestRollmean(unittest.TestCase):
         ts_info = gen_ts(1)
         try:
             window_size = 10
-            results = rollmean_ts_list(tdm=TDM, ts_list=[ts_info['tsuid']], window_size=window_size,
+            results = rollmean_ts_list(ts_list=[ts_info['tsuid']], window_size=window_size,
                                        alignment=Alignment.left, save=False)
             self.assertEqual(len(results), 1)
 
@@ -276,6 +271,6 @@ class TestRollmean(unittest.TestCase):
         Testing the the rollmean algorithm from dataset
         """
         window_size = 10
-        results = rollmean_ds(tdm=TDM, ds_name='Portfolio', window_size=window_size,
+        results = rollmean_ds(ds_name='Portfolio', window_size=window_size,
                               alignment=Alignment.left, save=False)
         self.assertEqual(len(results), 13)
