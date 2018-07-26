@@ -14,12 +14,6 @@
   ],
   "parameters": [
     {
-      "name": "period",
-      "description": "the value defining the resampling period (unit : ms)",
-      "type": "number",
-      "label": "Period"
-    },
-    {
       "name": "window_period",
       "description": "The duration of the sliding window (in ms). Mutually exclusive with the parameter 'Window size'",
       "type": "number",

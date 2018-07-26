@@ -232,15 +232,12 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     return ts_result
 
 
-def rollmean_tsuid(tdm, tsuid, window_size=None, window_period=None, alignment=Alignment.left, save=True):
+def rollmean_tsuid(tsuid, window_size=None, window_period=None, alignment=Alignment.left, save=True):
     """
     Compute the rollmean on TS data provided
 
     If the Save Flag is set to True, the method returns the new TSUID that have been saved as str
     Otherwise, the returned value is the TS_result as TimestampedMonoVal
-
-    :param tdm: Temporal Data Manager API
-    :type tdm: TemporalDataMgr
 
     :param tsuid: TSUID of the TS to compute rollmean on
     :type tsuid: str
@@ -278,7 +275,7 @@ def rollmean_tsuid(tdm, tsuid, window_size=None, window_period=None, alignment=A
 
     # Define the window size
     if window_period:
-        window_size = get_window_size(tdm=tdm, tsuid=tsuid, ts_data=ts_data, period=window_period)
+        window_size = get_window_size(tsuid=tsuid, ts_data=ts_data, period=window_period)
 
     # Compute the rolling mean
     start_computing_time = time.time()
@@ -298,12 +295,9 @@ def rollmean_tsuid(tdm, tsuid, window_size=None, window_period=None, alignment=A
         return ts_result
 
 
-def rollmean_ts_list(tdm, ts_list, window_size=None, window_period=None, alignment=Alignment.left, save=True):
+def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Alignment.left, save=True):
     """
     Compute the rollmean on a provided TS list
-
-    :param tdm: Temporal Data Manager API
-    :type tdm: TemporalDataMgr
 
     :param ts_list: list of TSUID
     :type ts_list: list
@@ -326,7 +320,7 @@ def rollmean_ts_list(tdm, ts_list, window_size=None, window_period=None, alignme
     result = []
     for tsuid in ts_list:
         if save:
-            new_tsuid, new_fid = rollmean_tsuid(tdm=tdm, tsuid=tsuid,
+            new_tsuid, new_fid = rollmean_tsuid(tsuid=tsuid,
                                                 window_size=window_size, window_period=window_period,
                                                 alignment=alignment, save=save)
 
@@ -336,7 +330,7 @@ def rollmean_ts_list(tdm, ts_list, window_size=None, window_period=None, alignme
                 "origin": tsuid
             })
         else:
-            new_tsuid = rollmean_tsuid(tdm=tdm, tsuid=tsuid,
+            new_tsuid = rollmean_tsuid(tsuid=tsuid,
                                        window_size=window_size, window_period=window_period,
                                        alignment=alignment, save=save)
             result.append({
@@ -347,12 +341,9 @@ def rollmean_ts_list(tdm, ts_list, window_size=None, window_period=None, alignme
     return result
 
 
-def rollmean_ds(tdm, ds_name, window_period=None, window_size=None, alignment=Alignment.left, save=True):
+def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left, save=True):
     """
     Compute the rollmean on a provided dataset name
-
-    :param tdm: Temporal Data Manager API
-    :type tdm: TemporalDataMgr
 
     :param ds_name: Name of the dataset to work on
     :type ds_name: str
@@ -372,17 +363,14 @@ def rollmean_ds(tdm, ds_name, window_period=None, window_size=None, alignment=Al
     :return: A list of dict composed of original TSUID and the information about the new TS
     :rtype: list
     """
-    ts_list = tdm.get_data_set(data_set=ds_name)['ts_list']
-    return rollmean_ts_list(tdm=tdm, ts_list=ts_list, window_size=window_size, window_period=window_period,
+    ts_list = IkatsApi.ds.read(ds_name=ds_name)['ts_list']
+    return rollmean_ts_list(ts_list=ts_list, window_size=window_size, window_period=window_period,
                             alignment=alignment, save=save)
 
 
-def get_window_size(tdm, tsuid, ts_data, period):
+def get_window_size(tsuid, ts_data, period):
     """
     Gets the window size (in number of points) corresponding to a specific period for the given tsuid
-
-    :param tdm: Temporal Data Manager API
-    :type tdm: TemporalDataMgr
 
     :param tsuid: original TSUID used for computation
     :type tsuid: str
@@ -405,7 +393,7 @@ def get_window_size(tdm, tsuid, ts_data, period):
 
     # noinspection PyBroadException
     try:
-        meta_data = tdm.get_meta_data(ts_list=[tsuid])
+        meta_data = IkatsApi.md.read(ts_list=[tsuid])
         if 'qual_ref_period' in meta_data[tsuid]:
             window_size = ceil(period / meta_data[tsuid]['qual_ref_period'])
             LOGGER.debug("Period (%sms) -> Window size = %s", period, window_size)
