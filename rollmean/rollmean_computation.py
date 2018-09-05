@@ -24,6 +24,10 @@ from ikats.core.data.ts import TimestampedMonoVal
 from ikats.core.library.exception import IkatsException, IkatsConflictError
 from ikats.core.resource.api import IkatsApi
 
+from ikats.core.library.spark import ScManager, SSessionManager, Connector
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
 """
 Rollmean Algorithm (also named Sliding window)
 """
@@ -185,12 +189,15 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
         raise TypeError("Alignment must be taken within Alignment Enumerate")
     if type(ts_data) != np.ndarray and type(ts_data) != TimestampedMonoVal:
         raise TypeError("ts_data must be numpy array or TimestampedMonoVal (got %s)" % type(ts_data))
-    if window_size is not None and type(window_size) != int and window_size > 0:
-        raise ValueError("window size must be positive integer")
-    if window_size is not None and window_size >= len(ts_data):
+
+    if type(window_size) != int:
+        raise TypeError("window_size must be integer")
+    if window_size <= 0:
+        raise ValueError("window size must be integer")
+    if window_size >= len(ts_data):
         raise ValueError("window_size must be lower than TS length")
 
-    # Convert to numpy array
+    # Convert to TimestampedMonoVal object (numpy array)
     if type(ts_data) == TimestampedMonoVal:
         ts_data = ts_data.data
 
@@ -232,7 +239,8 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     return ts_result
 
 
-def rollmean_tsuid(tsuid, window_size=None, window_period=None, alignment=Alignment.left, save=True):
+def rollmean_tsuid(tsuid, window_size=None, window_period=None,
+                   alignment=Alignment.left, save=True):
     """
     Compute the rollmean on TS data provided
 
@@ -260,7 +268,8 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None, alignment=Alignm
     :raise TypeError: Save flag must be bool
     """
 
-    # input check
+    # 0/ input check
+    # ------------------------------------------------
     if type(save) != bool:
         raise TypeError("Save flag must be bool")
     if window_size is None and window_period is None:
@@ -268,20 +277,29 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None, alignment=Alignm
     if window_size is not None and window_period is not None:
         raise ValueError("window_period and window_size are mutually exclusive")
 
-    # Load TS content
+    # 1/ Load TS content
+    # ------------------------------------------------
+    # Read TS from it's ID
     start_loading_time = time.time()
     ts_data = IkatsApi.ts.read([tsuid])[0]
     LOGGER.debug("TSUID: %s, Gathering time: %.3f seconds", tsuid, time.time() - start_loading_time)
 
+    # 2/ Define the window size
+    # ------------------------------------------------
     # Define the window size
     if window_period:
+        # Get the size of the window (in nb_points) corresponding to the `window_period` provided
         window_size = get_window_size(tsuid=tsuid, ts_data=ts_data, period=window_period)
 
-    # Compute the rolling mean
+    # 3/ Compute the rolling mean
+    # ------------------------------------------------
+
     start_computing_time = time.time()
     ts_result = rollmean(ts_data=ts_data, window_size=window_size, alignment=alignment)
     LOGGER.debug("TSUID: %s, Computation time: %.3f ms", tsuid, 1000 * (time.time() - start_computing_time))
 
+    # 4/ Save result (if requested)
+    # ------------------------------------------------
     if save:
         # Save the result
         start_saving_time = time.time()
@@ -295,7 +313,8 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None, alignment=Alignm
         return ts_result
 
 
-def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Alignment.left, save=True):
+def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Alignment.left,
+                     save=True):
     """
     Compute the rollmean on a provided TS list
 
@@ -318,11 +337,14 @@ def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Al
     :rtype: list
     """
     result = []
+
     for tsuid in ts_list:
         if save:
             new_tsuid, new_fid = rollmean_tsuid(tsuid=tsuid,
-                                                window_size=window_size, window_period=window_period,
-                                                alignment=alignment, save=save)
+                                                window_size=window_size,
+                                                window_period=window_period,
+                                                alignment=alignment,
+                                                save=save)
 
             result.append({
                 "tsuid": new_tsuid,
@@ -331,8 +353,10 @@ def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Al
             })
         else:
             new_tsuid = rollmean_tsuid(tsuid=tsuid,
-                                       window_size=window_size, window_period=window_period,
-                                       alignment=alignment, save=save)
+                                       window_size=window_size,
+                                       window_period=window_period,
+                                       alignment=alignment,
+                                       save=save)
             result.append({
                 "tsuid": new_tsuid,
                 "funcId": "TS_Not_Saved_from_%s" % tsuid,
@@ -341,7 +365,103 @@ def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Al
     return result
 
 
-def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left, save=True):
+# TODO: Finish dev:
+def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save=True, spark_context=None):
+    """
+    Apply rollmean on each TS of the TS_list provided (`ts_list`)
+
+    :param ts_list: list of TSUID
+    :type ts_list: list
+
+    :param window_size: Size of the sliding window (in number of points). Mutually exclusive with window_size
+    :type window_size: int
+
+    :param alignment: result alignment (left,right,center), default: center
+    :type alignment: int
+
+    :return: The new TS
+    :rtype: TimestampedMonoVal
+
+    :param spark_context: The spark_context used for algo.
+    :type spark_context: pyspark.context.SparkContext or NoneType
+
+    :return:
+    """
+
+    # Input check
+    if type(spark_context) is not type(ScManager.spark_context):
+        TypeError("`spark_context` arg is {}, expected pyspark.context.SparkContext".format(type(spark_context)))
+
+    # Init Spark session (for using Spark's DataFrames) with SSessionManager wrapper
+    spark_session = SSessionManager.get(spark_context=spark_context)
+
+    # Init result
+    ts_result_values = []
+
+    try:
+        # Checking metadata availability before starting cutting
+        meta_list = IkatsApi.md.read(ts_list)
+
+        # For each TS to compute
+        for ts_uid in ts_list:
+
+            # 1/ Get data
+            # --------------------------------------------------------------------------
+            df = SSessionManager.get_ts_by_chunks(tsuid=ts_uid, md=meta_list[ts_uid])
+
+            # 2/ Choose window
+            # ----------------------------
+            # OPERATION: Add column 'id' containing same thing (here `1`).
+            # Usefull for `Window.partitionBy`
+            # INPUT: One unique TS [Timestamp, Value]
+            # OUTPUT: df with new column (constant: 1) [Timestamp, Value, id]
+            df = df.withColumn('id', F.lit(1))
+
+            # Init window:
+            # partitionBy('id'): Group operation by column 'id' (i.e. consider all rows)
+            # Order result by Time, for perform a correct rollmean
+            win = Window.partitionBy('id').orderBy('Timestamp')
+            # Note that the `partitionBy()` specification is necessary (else, move all data to a single
+            # partition)
+
+            # Choose Alignment: total of `window_size` rows in the sliding window.
+            if alignment == Alignment.left:
+                win = win.rowsBetween(Window.currentRow, window_size)
+                # Window frame: starting from 0 (current point), ending at `window_size` (rows after the current row),
+            if alignment == Alignment.center:
+                win = win.rowsBetween(-floor(window_size / 2.), floor(window_size / 2.))
+                # Window frame: surrounding current point (0)
+            if alignment == Alignment.right:
+                win = win.rowsBetween(-window_size, Window.currentRow)
+                # Window frame:starting from `window_size` to current row (0)
+
+            # 3/ Calculate moving average
+            # ----------------------------
+            # OPERATION: Compute rollmean over `window_size`, put result on 'rollmean' column
+            # INPUT: One unique TS [Timestamp, Value, id]
+            # OUTPUT: df with new column [Timestamp, Value, id, rollmean]
+            df = df.withColumn("rollmean", F.avg("Value").over(win))
+
+            # OPERATION: Sort by date
+            # INPUT: [Timestamp, Value, id, rollmean]
+            # OUTPUT: [Timestamp, Value, id, rollmean] *sorted by date*
+            df = df.sort("Timestamp")
+
+            # TODO: collect result
+            ts_result_values = df.collect()
+
+            # TODO: Save new ts_list if requested
+    except Exception:
+        raise
+    finally:
+        spark_session.stop()
+
+        # TODO: Change result into propoer format !
+        return ts_result_values
+
+
+def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left,
+                save=True):
     """
     Compute the rollmean on a provided dataset name
 
@@ -363,9 +483,34 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
     :return: A list of dict composed of original TSUID and the information about the new TS
     :rtype: list
     """
+
     ts_list = IkatsApi.ds.read(ds_name=ds_name)['ts_list']
-    return rollmean_ts_list(ts_list=ts_list, window_size=window_size, window_period=window_period,
-                            alignment=alignment, save=save)
+
+    # 0/ Check for spark usage
+    # ----------------------------------------------------------
+    sc = ScManager()
+    sc.get()
+
+    # Check using criterion (nb_points and number of ts)
+    if not sc.check_spark_usage(tsuid_list=ts_list,
+                                nb_ts_criteria=100,
+                                nb_points_by_chunk=50000):
+        # IF check IS FALSE: DO NOT USE SPARK
+        sc.stop()
+
+        return rollmean_ts_list(ts_list=ts_list, window_size=window_size, window_period=window_period,
+                                alignment=alignment, save=save)
+    else:
+        # ELSE check IS TRUE: USE SPARK
+        try:
+            result = spark_rollmean_tslist(ts_list=ts_list, window_size=window_size,
+                                           alignment=alignment, spark_context=sc.spark_context)
+        except Exception:
+            raise
+        finally:
+            # Stop spark context in all cases
+            ScManager.stop()
+    return result
 
 
 def get_window_size(tsuid, ts_data, period):
