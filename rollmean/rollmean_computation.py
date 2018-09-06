@@ -19,14 +19,13 @@ import time
 from math import ceil, floor
 
 import numpy as np
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 from ikats.core.data.ts import TimestampedMonoVal
 from ikats.core.library.exception import IkatsException, IkatsConflictError
-from ikats.core.resource.api import IkatsApi
-
 from ikats.core.library.spark import ScManager, SSessionManager, Connector
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
+from ikats.core.resource.api import IkatsApi
 
 """
 Rollmean Algorithm (also named Sliding window)
@@ -403,9 +402,8 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
     spark_session = SSessionManager.get(spark_context=spark_context)
 
     # Init result
-    ts_result_values = []
-
     result = []
+
     try:
         # Checking metadata availability before starting cutting
         meta_list = IkatsApi.md.read(ts_list)
@@ -454,13 +452,13 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
             # OPERATION: Drop column "Value" and "id"
             # INPUT: Df containing one unique TS [Timestamp, Value, id, rollmean]
             # OUTPUT: same df with columns [Timestamp, rollmean]
-            df.drop("Value", "id")
+            df = df.drop("Value", "id")
 
             # TODO: This op. is useless (no Header in the saved DF)
             # OPERATION: Rename column "rollmean" into "Value" for return a good format of Dataframe
             # INPUT: Df containing one unique TS [Timestamp, rollmean]
             # OUTPUT: same df with columns named [Timestamp, Value]
-            df.withColumnRenamed('rollmean', 'Value')
+            df = df.withColumnRenamed('rollmean', 'Value')
 
             # OPERATION: Sort by date
             # INPUT: [Timestamp, Value]
@@ -470,25 +468,47 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
             # 4/ Save result (if requested)
             # ------------------------------------------------
             if save:
-
-                # TODO: Spark the saving
-                ts_result = np.array(df.collect())
-                # Shape = (n_row, 2)
-
-                # Transform result into IKATS TimestampedMonoVal (one TS into a numpy array)
-                ts_result = TimestampedMonoVal(ts_result)
-
-
                 # Save the result
                 start_saving_time = time.time()
                 short_name = "rollmean_%s" % window_size
-                new_tsuid, new_fid = save_rollmean(tsuid=ts_uid,
-                                                   ts_result=ts_result,
-                                                   short_name=short_name,
-                                                   sparkified=False)
+
+                # Generate the new functional identifier (fid) for the current TS (ts_uid)
+                new_fid = gen_fid(tsuid=ts_uid, short_name=short_name)
+
+                # TODO: rm this comment (action slower than new version)
+                # OPERATION: Import result by chunk into database, and collect
+                # INPUT: [Timestamp, Value]
+                # OUTPUT: the new ts_uid of the rollmean ts
+                # mapPartition(lambda x:) Here, `x` is iterable object (must be converted into list)
+                # new_tsuid = df.rdd.mapPartitions(lambda it:
+                #                                  Connector.import_ts(func_id=new_fid,
+                #                                                      data=list(it),
+                #                                                      generate_metadata=True,
+                #                                                      parent=ts_uid,
+                #                                                      sparkified=True
+                #                                                      )['tsuid']). \
+                #     collect()
+
+                # TODO: put these two operation into module ikats.core.library.spark
+                # OPERATION: Import result by chunk into database
+                # INPUT: Timeserie into dataframe [Timestamp, Value]
+                # OUTPUT: rdd containing the TSUID of new TS created ([new_tsuid] duplicated `len(rdd)` times)
+                new_tsuid_rdd = df.rdd.map(lambda x:
+                                                 Connector.import_ts(func_id=new_fid,
+                                                                     data=np.array(x).reshape(1,2),
+                                                                     generate_metadata=True,
+                                                                     parent=ts_uid,
+                                                                     sparkified=True
+                                                                     )['tsuid'])
+
+                # OPERATION: Get first element (also perform a collect)
+                # INPUT: rdd containing the TSUID of new TS created ([new_tsuid] duplicated `len(rdd)` times)
+                # OUTPUT: the tsuid of the new TS created (str)
+                new_tsuid = new_tsuid_rdd.first()
+                # Note that `first` is quickest than `collect`
+
                 LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                              time.time() - start_saving_time)
-
 
                 result.append({
                     "tsuid": new_tsuid,
@@ -642,6 +662,9 @@ def save_rollmean(tsuid, ts_result, short_name="rollmean", sparkified=False):
 
     :raise IOError: if an issue occurs during the import
     """
+    if type(ts_result) is not TimestampedMonoVal:
+        raise TypeError('Arg `ts_result` is {}, expected TimestampedMonoVal'.format(type(ts_result)))
+
     try:
         # Generate new FID
         new_fid = gen_fid(tsuid=tsuid, short_name=short_name)
