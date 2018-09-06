@@ -304,11 +304,15 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None,
         # Save the result
         start_saving_time = time.time()
         short_name = "rollmean_%s" % window_size
-        new_tsuid, new_fid = save_rollmean(tsuid=tsuid, ts_result=ts_result, short_name=short_name)
+        new_tsuid, new_fid = save_rollmean(tsuid=tsuid,
+                                           ts_result=ts_result,
+                                           short_name=short_name,
+                                           sparkified=False)
         LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                      time.time() - start_saving_time)
         return new_tsuid, new_fid
     else:
+        # TODO: here, must return a tsuid...
         # No save planned, return the computed TS
         return ts_result
 
@@ -379,6 +383,9 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
     :param alignment: result alignment (left,right,center), default: center
     :type alignment: int
 
+    :param save: Bool indicating if result should be saved (case True). Default True.
+    :type save: bool
+
     :return: The new TS
     :rtype: TimestampedMonoVal
 
@@ -398,6 +405,7 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
     # Init result
     ts_result_values = []
 
+    result = []
     try:
         # Checking metadata availability before starting cutting
         meta_list = IkatsApi.md.read(ts_list)
@@ -407,6 +415,7 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
 
             # 1/ Get data
             # --------------------------------------------------------------------------
+            # Import data into dataframe (["Timestamp", "Value"])
             df = SSessionManager.get_ts_by_chunks(tsuid=ts_uid, md=meta_list[ts_uid])
 
             # 2/ Choose window
@@ -438,26 +447,71 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
             # 3/ Calculate moving average
             # ----------------------------
             # OPERATION: Compute rollmean over `window_size`, put result on 'rollmean' column
-            # INPUT: One unique TS [Timestamp, Value, id]
+            # INPUT: Df containing one unique TS [Timestamp, Value, id]
             # OUTPUT: df with new column [Timestamp, Value, id, rollmean]
             df = df.withColumn("rollmean", F.avg("Value").over(win))
 
+            # OPERATION: Drop column "Value" and "id"
+            # INPUT: Df containing one unique TS [Timestamp, Value, id, rollmean]
+            # OUTPUT: same df with columns [Timestamp, rollmean]
+            df.drop("Value", "id")
+
+            # TODO: This op. is useless (no Header in the saved DF)
+            # OPERATION: Rename column "rollmean" into "Value" for return a good format of Dataframe
+            # INPUT: Df containing one unique TS [Timestamp, rollmean]
+            # OUTPUT: same df with columns named [Timestamp, Value]
+            df.withColumnRenamed('rollmean', 'Value')
+
             # OPERATION: Sort by date
-            # INPUT: [Timestamp, Value, id, rollmean]
-            # OUTPUT: [Timestamp, Value, id, rollmean] *sorted by date*
+            # INPUT: [Timestamp, Value]
+            # OUTPUT: [Timestamp, Value] *sorted by date*
             df = df.sort("Timestamp")
 
-            # TODO: collect result
-            ts_result_values = df.collect()
+            # 4/ Save result (if requested)
+            # ------------------------------------------------
+            if save:
 
-            # TODO: Save new ts_list if requested
+                # TODO: Spark the saving
+                ts_result = np.array(df.collect())
+                # Shape = (n_row, 2)
+
+                # Transform result into IKATS TimestampedMonoVal (one TS into a numpy array)
+                ts_result = TimestampedMonoVal(ts_result)
+
+
+                # Save the result
+                start_saving_time = time.time()
+                short_name = "rollmean_%s" % window_size
+                new_tsuid, new_fid = save_rollmean(tsuid=ts_uid,
+                                                   ts_result=ts_result,
+                                                   short_name=short_name,
+                                                   sparkified=False)
+                LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
+                             time.time() - start_saving_time)
+
+
+                result.append({
+                    "tsuid": new_tsuid,
+                    "funcId": new_fid,
+                    "origin": ts_uid
+                })
+            else:
+
+                # TODO: `new_tsuid` must be init...
+                result.append({
+                    "tsuid": new_tsuid,
+                    "funcId": "TS_Not_Saved_from_%s" % ts_uid,
+                    "origin": ts_uid
+                })
+
+        # END FOR (op. on all TS performed)
+
     except Exception:
         raise
     finally:
         spark_session.stop()
 
-        # TODO: Change result into propoer format !
-        return ts_result_values
+    return result
 
 
 def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left,
@@ -482,6 +536,12 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
 
     :return: A list of dict composed of original TSUID and the information about the new TS
     :rtype: list
+
+    ..Example: result=[{"tsuid": new_tsuid,
+                        "funcId": new_fid
+                        "origin": tsuid
+                        }, ...]
+    If save=False,  "funcId": "TS_Not_Saved_from_%s" % tsuid
     """
 
     ts_list = IkatsApi.ds.read(ds_name=ds_name)['ts_list']
@@ -559,7 +619,7 @@ def get_window_size(tsuid, ts_data, period):
     raise ValueError("Window size is too big compared to TS length")
 
 
-def save_rollmean(tsuid, ts_result, short_name="rollmean"):
+def save_rollmean(tsuid, ts_result, short_name="rollmean", sparkified=False):
     """
     Saves the TS to database
     It copies some attributes from the original TSUID, that is why it needs the tsuid
@@ -573,35 +633,57 @@ def save_rollmean(tsuid, ts_result, short_name="rollmean"):
     :param short_name: Name used as short name for Functional identifier
     :type short_name: str
 
+    :param sparkified: set to True to prevent from having multi-processing,
+                       and to handle correctly the creation of TS by chunk
+    :type sparkified: bool
+
     :return: the created TSUID and its associated FID
     :rtype: str, str
 
     :raise IOError: if an issue occurs during the import
     """
     try:
-        # Retrieve timeseries information (funcId)
-        original_fid = IkatsApi.ts.fid(tsuid=tsuid)
+        # Generate new FID
+        new_fid = gen_fid(tsuid=tsuid, short_name=short_name)
 
-        # Generate unique functional id for resulting timeseries
-        new_fid = '%s_%s' % (str(original_fid), short_name)
-        try:
-            IkatsApi.ts.create_ref(new_fid)
-        except IkatsConflictError:
-            # TS already exist, append timestamp to be unique
-            new_fid = '%s_%s_%s' % (str(original_fid), short_name, int(time.time() * 1000))
-            IkatsApi.ts.create_ref(new_fid)
-
-        # Import timeseries result in DB
-        res_import = IkatsApi.ts.create(fid=new_fid,
-                                        data=ts_result.data,
-                                        parent=tsuid,
-                                        generate_metadata=True)
-
-        # Returns the TSUID if no issue happened
-        if res_import['status']:
-            return res_import['tsuid'], new_fid
-        else:
-            raise IOError(" IkatsApi.ts.create(fid={}, data=..., ...) failed".format(original_fid))
+        # Import timeseries result in database
+        res_import = Connector.import_ts(func_id=new_fid,
+                                         data=ts_result.data,
+                                         generate_metadata=True,
+                                         parent=tsuid,
+                                         sparkified=sparkified
+                                         )
+        return res_import['tsuid'], new_fid
 
     except Exception:
         raise IkatsException("save_rollmean() failed")
+
+
+def gen_fid(tsuid, short_name="rollmean"):
+    """
+    Generate a new functional identifier (fid) for current TS (`tsuid`).
+    Return new fid (`previous_fid`_`short_name`). If already exist, create new fid
+    (`previous_fid`_`short_name`_`time * 1000`).
+
+    :param tsuid: original TSUID used for computation
+    :type tsuid: str
+
+    :param short_name: Name used as short name for Functional identifier
+    :type short_name: str
+
+    :return: The new fid of the TS to create.
+    :rtype: str
+    """
+    # Retrieve timeseries information (funcId)
+    original_fid = IkatsApi.ts.fid(tsuid=tsuid)
+
+    # Generate unique functional id for resulting timeseries
+    new_fid = '%s_%s' % (str(original_fid), short_name)
+    try:
+        IkatsApi.ts.create_ref(new_fid)
+    except IkatsConflictError:
+        # TS already exist, append timestamp to be unique
+        new_fid = '%s_%s_%s' % (str(original_fid), short_name, int(time.time() * 1000))
+        IkatsApi.ts.create_ref(new_fid)
+
+    return new_fid
