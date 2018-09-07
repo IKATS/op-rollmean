@@ -368,8 +368,7 @@ def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Al
     return result
 
 
-# TODO: Finish dev:
-def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save=True, spark_context=None):
+def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignment=Alignment.center, save=True, spark_context=None):
     """
     Apply rollmean on each TS of the TS_list provided (`ts_list`)
 
@@ -378,6 +377,9 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
 
     :param window_size: Size of the sliding window (in number of points). Mutually exclusive with window_size
     :type window_size: int
+
+    :param window_period: Size of the sliding window (in ms). Mutually exclusive with window_period
+    :type window_period: int
 
     :param alignment: result alignment (left,right,center), default: center
     :type alignment: int
@@ -397,6 +399,10 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
     # Input check
     if type(spark_context) is not type(ScManager.spark_context):
         TypeError("`spark_context` arg is {}, expected pyspark.context.SparkContext".format(type(spark_context)))
+    if window_size is None and window_period is None:
+        raise ValueError("window_period xor window_size must be set")
+    if window_size is not None and window_period is not None:
+        raise ValueError("window_period and window_size are mutually exclusive")
 
     # Init Spark session (for using Spark's DataFrames) with SSessionManager wrapper
     spark_session = SSessionManager.get(spark_context=spark_context)
@@ -418,6 +424,12 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
 
             # 2/ Choose window
             # ----------------------------
+            # Define the window size
+            if window_period:
+                # Get the size of the window (in nb_points) corresponding to the `window_period` provided
+                window_size = _spark_get_window_size(tsuid=ts_uid, df_ts_data=df, period=window_period)
+
+            # TODO: this section can (potentially) be optim.
             # OPERATION: Add column 'id' containing same thing (here `1`).
             # Usefull for `Window.partitionBy`
             # INPUT: One unique TS [Timestamp, Value]
@@ -454,12 +466,6 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
             # OUTPUT: same df with columns [Timestamp, rollmean]
             df = df.drop("Value", "id")
 
-            # TODO: This op. is useless (no Header in the saved DF)
-            # OPERATION: Rename column "rollmean" into "Value" for return a good format of Dataframe
-            # INPUT: Df containing one unique TS [Timestamp, rollmean]
-            # OUTPUT: same df with columns named [Timestamp, Value]
-            df = df.withColumnRenamed('rollmean', 'Value')
-
             # OPERATION: Sort by date
             # INPUT: [Timestamp, Value]
             # OUTPUT: [Timestamp, Value] *sorted by date*
@@ -472,40 +478,25 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
                 start_saving_time = time.time()
                 short_name = "rollmean_%s" % window_size
 
+                # TODO: put this code into `spark` module
                 # Generate the new functional identifier (fid) for the current TS (ts_uid)
                 new_fid = gen_fid(tsuid=ts_uid, short_name=short_name)
 
-                # TODO: rm this comment (action slower than new version)
                 # OPERATION: Import result by chunk into database, and collect
                 # INPUT: [Timestamp, Value]
                 # OUTPUT: the new ts_uid of the rollmean ts
                 # mapPartition(lambda x:) Here, `x` is iterable object (must be converted into list)
-                # new_tsuid = df.rdd.mapPartitions(lambda it:
-                #                                  Connector.import_ts(func_id=new_fid,
-                #                                                      data=list(it),
-                #                                                      generate_metadata=True,
-                #                                                      parent=ts_uid,
-                #                                                      sparkified=True
-                #                                                      )['tsuid']). \
-                #     collect()
+                df.rdd.mapPartitions(lambda it:
+                                     Connector.import_ts(func_id=new_fid,
+                                                         data=list(it),
+                                                         generate_metadata=True,
+                                                         parent=None,
+                                                         sparkified=True
+                                                         )['tsuid']). \
+                    collect()
 
-                # TODO: put these two operation into module ikats.core.library.spark
-                # OPERATION: Import result by chunk into database
-                # INPUT: Timeserie into dataframe [Timestamp, Value]
-                # OUTPUT: rdd containing the TSUID of new TS created ([new_tsuid] duplicated `len(rdd)` times)
-                new_tsuid_rdd = df.rdd.map(lambda x:
-                                                 Connector.import_ts(func_id=new_fid,
-                                                                     data=np.array(x).reshape(1,2),
-                                                                     generate_metadata=True,
-                                                                     parent=ts_uid,
-                                                                     sparkified=True
-                                                                     )['tsuid'])
-
-                # OPERATION: Get first element (also perform a collect)
-                # INPUT: rdd containing the TSUID of new TS created ([new_tsuid] duplicated `len(rdd)` times)
-                # OUTPUT: the tsuid of the new TS created (str)
-                new_tsuid = new_tsuid_rdd.first()
-                # Note that `first` is quickest than `collect`
+                # Retrieve ts_uid with new_fid
+                new_tsuid = IkatsApi.fid.tsuid(fid=new_fid)
 
                 LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                              time.time() - start_saving_time)
@@ -516,10 +507,16 @@ def spark_rollmean_tslist(ts_list, window_size, alignment=Alignment.center, save
                     "origin": ts_uid
                 })
             else:
+                # Option NO SAVE: return the full dataframe (!)
+                ts_result = np.array(df.collect())
+                # Shape = (n_row, 2)
 
-                # TODO: `new_tsuid` must be init...
+                # Transform result into IKATS TimestampedMonoVal (one TS into a numpy array)
+                ts_result = TimestampedMonoVal(ts_result)
+
+                # Format of result should be as option SAVE=TRUE (but "tsuid": ts_result)
                 result.append({
-                    "tsuid": new_tsuid,
+                    "tsuid": ts_result,
                     "funcId": "TS_Not_Saved_from_%s" % ts_uid,
                     "origin": ts_uid
                 })
@@ -583,7 +580,7 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
     else:
         # ELSE check IS TRUE: USE SPARK
         try:
-            result = spark_rollmean_tslist(ts_list=ts_list, window_size=window_size,
+            result = spark_rollmean_tslist(ts_list=ts_list, window_size=window_size, window_period=window_period,
                                            alignment=alignment, spark_context=sc.spark_context)
         except Exception:
             raise
@@ -591,6 +588,82 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
             # Stop spark context in all cases
             ScManager.stop()
     return result
+
+# TODO: put this function into `spark` specific module
+def _spark_get_window_size(tsuid, df_ts_data, period, meta_data=None):
+    """
+    Gets the window size (in number of points) corresponding to a specific period for the given tsuid
+
+    :param tsuid: original TSUID used for computation
+    :type tsuid: str
+
+    :param df_ts_data: input Timeseries to compute the rollmean on, is a pyspark Dataframe
+    :type df_ts_data: pyspark.sql.dataframe.DataFrame
+
+    :param period: Size of the sliding window (in ms).
+    :type period: int
+
+    :param meta_data: The meta data of the current TS (`tsuid`).
+    :type meta_data: dict
+
+    :return: the number of points corresponding to the period
+    :rtype: int
+    """
+    # 0/ Input check
+    # ----------------------------------------------
+    if period is None:
+        raise TypeError("Period must be provided")
+    if type(period) != int and period <= 0:
+        raise ValueError("window period must be positive integer")
+    if type(meta_data) is not dict and meta_data is not None:
+        raise ValueError("Arg `meta_data` is {}, expected dict or None".format(type(meta_data)))
+
+    # noinspection PyBroadException
+    try:
+
+        #  Retrieve meta data if not specified
+        if meta_data is None:
+            meta_data = IkatsApi.md.read(ts_list=[tsuid])
+
+        # start date
+        sd = int(meta_data[tsuid]['ikats_start_date'])
+        # End date
+        ed = int(meta_data[tsuid]['ikats_end_date'])
+
+        # Check window period : period >= end_date - start_date
+        if period >= ed - sd:
+            raise ValueError("window_period must be lower than TS window (%s)" % (ed - sd))
+
+        # 1/ Case 1: metadata available ('qual_ref_period')
+        # --------------------------------------------------
+        if 'qual_ref_period' in meta_data[tsuid]:
+            window_size = ceil(period / meta_data[tsuid]['qual_ref_period'])
+            LOGGER.debug("Period (%sms) -> Window size = %s", period, window_size)
+            return window_size
+
+        # 2/ Case 2: metadata not available ('qual_ref_period'): retrieve window size
+        # ----------------------------------------------------------------------------
+        else:
+            # If no meta data has been found (or if error occurred), count the number manually
+            LOGGER.debug("qual_ref_period metadata not found for tsuid:%s", tsuid)
+
+            # OPERATION: Find all times which are <= period + start_date in the dataframe
+            # INPUT: Dataframe containing one TS [Timestamp, Value]
+            # OUTPUT: All Timestamp value which is < period + sd (one window)
+            first_time = df_ts_data.orderBy("Timestamp"). \
+                where(df_ts_data.Timestamp < period + sd).\
+                select("Timestamp")
+
+            # OPERATION: Collect and get the number of row corresponding
+            # INPUT: All Timestamp value which is < period + sd.
+            # OUTPUT: The number of points which are < period + sd (the window size)
+            first_time_index = first_time.count()
+
+            LOGGER.debug("Period (%sms) -> Window size = %s", period, first_time_index)
+            return first_time_index
+
+    except Exception:
+        raise ValueError("Window size is too big compared to TS length")
 
 
 def get_window_size(tsuid, ts_data, period):
