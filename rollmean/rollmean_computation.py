@@ -24,7 +24,7 @@ from pyspark.sql.window import Window
 
 from ikats.core.data.ts import TimestampedMonoVal
 from ikats.core.library.exception import IkatsException, IkatsConflictError
-from ikats.core.library.spark import ScManager, SSessionManager, Connector
+from ikats.core.library.spark import SparkUtils, SSessionManager
 from ikats.core.resource.api import IkatsApi
 
 """
@@ -368,7 +368,7 @@ def rollmean_ts_list(ts_list, window_size=None, window_period=None, alignment=Al
     return result
 
 
-def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignment=Alignment.center, save=True, spark_context=None):
+def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignment=Alignment.center, save=True):
     """
     Apply rollmean on each TS of the TS_list provided (`ts_list`)
 
@@ -390,22 +390,14 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     :return: The new TS
     :rtype: TimestampedMonoVal
 
-    :param spark_context: The spark_context used for algo.
-    :type spark_context: pyspark.context.SparkContext or NoneType
-
     :return:
     """
 
     # Input check
-    if type(spark_context) is not type(ScManager.spark_context):
-        TypeError("`spark_context` arg is {}, expected pyspark.context.SparkContext".format(type(spark_context)))
     if window_size is None and window_period is None:
         raise ValueError("window_period xor window_size must be set")
     if window_size is not None and window_period is not None:
         raise ValueError("window_period and window_size are mutually exclusive")
-
-    # Init Spark session (for using Spark's DataFrames) with SSessionManager wrapper
-    spark_session = SSessionManager.get(spark_context=spark_context)
 
     # Init result
     result = []
@@ -420,7 +412,7 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # 1/ Get data
             # --------------------------------------------------------------------------
             # Import data into dataframe (["Timestamp", "Value"])
-            df = SSessionManager.get_ts_by_chunks(tsuid=ts_uid, md=meta_list[ts_uid])
+            df = SSessionManager.get_ts_by_chunks_as_df(tsuid=ts_uid, md=meta_list[ts_uid])
 
             # 2/ Choose window
             # ----------------------------
@@ -487,12 +479,12 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
                 # OUTPUT: the new ts_uid of the rollmean ts
                 # mapPartition(lambda x:) Here, `x` is iterable object (must be converted into list)
                 df.rdd.mapPartitions(lambda it:
-                                     Connector.import_ts(func_id=new_fid,
-                                                         data=list(it),
-                                                         generate_metadata=True,
-                                                         parent=None,
-                                                         sparkified=True
-                                                         )['tsuid']). \
+                                     IkatsApi.ts.create(fid=new_fid,
+                                                        data=list(it),
+                                                        generate_metadata=True,
+                                                        parent=None,
+                                                        sparkified=True
+                                                        )['tsuid']). \
                     collect()
 
                 # Retrieve ts_uid with new_fid
@@ -531,8 +523,7 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     return result
 
 
-def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left,
-                save=True):
+def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left, save=True):
     """
     Compute the rollmean on a provided dataset name
 
@@ -565,29 +556,20 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
 
     # 0/ Check for spark usage
     # ----------------------------------------------------------
-    sc = ScManager()
-    sc.get()
 
     # Check using criterion (nb_points and number of ts)
-    if not sc.check_spark_usage(tsuid_list=ts_list,
-                                nb_ts_criteria=100,
-                                nb_points_by_chunk=50000):
-        # IF check IS FALSE: DO NOT USE SPARK
-        sc.stop()
+    if not SparkUtils.check_spark_usage(tsuid_list=ts_list,
+                                       nb_ts_criteria=100,
+                                       nb_points_by_chunk=50000):
 
         return rollmean_ts_list(ts_list=ts_list, window_size=window_size, window_period=window_period,
                                 alignment=alignment, save=save)
     else:
         # ELSE check IS TRUE: USE SPARK
-        try:
-            result = spark_rollmean_tslist(ts_list=ts_list, window_size=window_size, window_period=window_period,
-                                           alignment=alignment, spark_context=sc.spark_context)
-        except Exception:
-            raise
-        finally:
-            # Stop spark context in all cases
-            ScManager.stop()
+        result = spark_rollmean_tslist(ts_list=ts_list, window_size=window_size, window_period=window_period,
+                                       alignment=alignment)
     return result
+
 
 # TODO: put this function into `spark` specific module
 def _spark_get_window_size(tsuid, df_ts_data, period, meta_data=None):
@@ -651,7 +633,7 @@ def _spark_get_window_size(tsuid, df_ts_data, period, meta_data=None):
             # INPUT: Dataframe containing one TS [Timestamp, Value]
             # OUTPUT: All Timestamp value which is < period + sd (one window)
             first_time = df_ts_data.orderBy("Timestamp"). \
-                where(df_ts_data.Timestamp < period + sd).\
+                where(df_ts_data.Timestamp < period + sd). \
                 select("Timestamp")
 
             # OPERATION: Collect and get the number of row corresponding
@@ -743,12 +725,12 @@ def save_rollmean(tsuid, ts_result, short_name="rollmean", sparkified=False):
         new_fid = gen_fid(tsuid=tsuid, short_name=short_name)
 
         # Import timeseries result in database
-        res_import = Connector.import_ts(func_id=new_fid,
-                                         data=ts_result.data,
-                                         generate_metadata=True,
-                                         parent=tsuid,
-                                         sparkified=sparkified
-                                         )
+        res_import = IkatsApi.ts.create(fid=new_fid,
+                                        data=ts_result.data,
+                                        generate_metadata=True,
+                                        parent=tsuid,
+                                        sparkified=sparkified
+                                        )
         return res_import['tsuid'], new_fid
 
     except Exception:
