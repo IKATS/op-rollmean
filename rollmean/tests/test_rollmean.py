@@ -221,8 +221,7 @@ class TestRollmean(unittest.TestCase):
 
             # Period and size set
             with self.assertRaises(ValueError):
-                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=5, window_period=5,
-                               alignment=Alignment.left)
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=5, window_period=5, alignment=Alignment.left)
 
             # size = 0
             with self.assertRaises(ValueError):
@@ -278,7 +277,7 @@ class TestRollmean(unittest.TestCase):
             self.clean_up_db(results)
             self.clean_up_db([ts_info])
 
-    def test_rollmean_ds(self):
+    def test_rollmean_ds_spark(self):
         """
         Testing the the rollmean algorithm from dataset
         """
@@ -290,7 +289,7 @@ class TestRollmean(unittest.TestCase):
         try:
             window_size = 2
             results = rollmean_ds(ds_name='ds_test', window_size=window_size,
-                                  alignment=Alignment.left)
+                                  alignment=Alignment.left, nb_points_by_chunk=5)
             result = IkatsApi.ts.read(results[0]['tsuid'])[0][:, 1]
 
             self.assertEqual(result[0], 1.5)
@@ -308,3 +307,59 @@ class TestRollmean(unittest.TestCase):
             # Clean up database
             IkatsApi.ds.delete("ds_test", True)
             self.clean_up_db(results)
+
+    def test_rollmean_ds_spark_alignement(self):
+        """
+        Testing the the rollmean algorithm from dataset
+        """
+        # TS used for calculation
+        ts_info = gen_ts(1)
+        tsuid = ts_info['tsuid']
+        IkatsApi.ds.create("ds_test", "", [tsuid])
+        ts_to_delete = []
+
+        try:
+            for window_size in [2, 5, 6]:
+                # Alignment.left
+                results_1 = rollmean_ds(ds_name='ds_test', window_size=window_size,
+                                        alignment=Alignment.left, nb_points_by_chunk=5)
+                ts_to_delete.append({'tsuid': results_1[0]})
+                results_1_data = IkatsApi.ts.read(results_1[0]['tsuid'])[0]
+                self.assertEqual(len(results_1_data), len(TS1_DATA) - window_size + 1)
+                self.assertEqual(results_1_data[0][0], TS1_DATA[0][0])
+
+                # Alignment.right
+                results_2 = rollmean_ds(ds_name='ds_test', window_size=window_size,
+                                        alignment=Alignment.right, nb_points_by_chunk=5)
+                ts_to_delete.append({'tsuid': results_2[0]})
+                results_2_data = IkatsApi.ts.read(results_2[0]['tsuid'])[0]
+                self.assertEqual(len(results_2_data), len(TS1_DATA) - window_size + 1)
+                self.assertEqual(results_2_data[-1][0], TS1_DATA[-1][0])
+
+                # Alignment.center
+                results_3 = rollmean_ds(ds_name='ds_test', window_size=window_size,
+                                        alignment=Alignment.center, nb_points_by_chunk=5)
+                ts_to_delete.append({'tsuid': results_3[0]})
+                results_3_data = IkatsApi.ts.read(results_3[0]['tsuid'])[0]
+                self.assertEqual(len(results_3_data), len(TS1_DATA) - window_size + 1)
+                self.assertEqual(results_3_data[0][0], TS1_DATA[int((window_size - 1) / 2)][0])
+
+                # alignment = 2 (center)
+                results_4 = rollmean_ds(ds_name='ds_test', window_size=window_size,
+                                        alignment=2, nb_points_by_chunk=5)
+                ts_to_delete.append({'tsuid': results_4[0]})
+                results_4_data = IkatsApi.ts.read(results_4[0]['tsuid'])[0]
+                self.assertEqual(len(results_4_data), len(TS1_DATA) - window_size + 1)
+                self.assertEqual(results_4_data[0][0], TS1_DATA[int((window_size - 1) / 2)][0])
+
+                # check values
+                self.assertTrue(np.array_equal(results_1_data[:, 1], results_2_data[:, 1]))
+                self.assertTrue(np.array_equal(results_1_data[:, 1], results_3_data[:, 1]))
+                self.assertTrue(np.array_equal(results_3_data[:, 1], results_4_data[:, 1]))
+                # check timestamps
+                self.assertTrue(np.array_equal(results_3_data[:, 0], results_4_data[:, 0]))
+
+        finally:
+            # Clean up database
+            IkatsApi.ds.delete("ds_test", True)
+            self.clean_up_db(ts_to_delete)

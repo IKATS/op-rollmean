@@ -374,18 +374,21 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     # Init result
     result = []
 
-    try:
-        # Checking metadata availability before starting cutting
-        meta_list = IkatsApi.md.read(ts_list)
+    # Checking metadata availability before starting cutting
+    meta_list = IkatsApi.md.read(ts_list)
 
-        # For each TS to compute
-        for ts_uid in ts_list:
+    # For each TS to compute
+    for ts_uid in ts_list:
 
-            md = meta_list[ts_uid]
-            sd = int(md['ikats_start_date'])
-            ed = int(md['ikats_end_date'])
-            period = int(float(md['qual_ref_period']))
+        md = meta_list[ts_uid]
+        sd = int(md['ikats_start_date'])
+        ed = int(md['ikats_end_date'])
+        if 'qual_ref_period' not in md:
+            raise ValueError("'qual_ref_period' metadata is missing for %s", IkatsApi.ts.fid(ts_uid))
 
+        period = int(float(md['qual_ref_period']))
+
+        try:
             # 1/ Get data
             # --------------------------------------------------------------------------
             # Import data into dataframe (["Timestamp", "Value"])
@@ -397,10 +400,11 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # Define the window size
             if window_period:
                 # Get the size of the window (in nb_points) corresponding to the `window_period` provided
-                window_size = ceil(period / period)
+                window_size = ceil(window_period / period)
 
             # Init window:
             # Order result by Time, for perform a correct rollmean
+            # NB: without partitionBy use, all data are processed in a unique partition
             win = Window.orderBy('Timestamp')
 
             # Window frame: starting from 0 (current point), ending at `window_size` not included
@@ -420,46 +424,50 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # OUTPUT: same df with columns [Timestamp, rollmean]
             df = df.drop("Value")
 
+            # OPERATION: filter last rows of dataframe for which rollmean was computed on too few points
+            # INPUT: Df containing rollmean result [Timestamp, rollmean]
+            # OUTPUT: same df without last unsignificant rows
+            df = df.filter(df.Timestamp <= ed - ((window_size - 1) * period))
+
+            # OPERATION: Perform required alignement
+            # INPUT: Df containing one unique TS [Timestamp, rollmean]
+            # OUTPUT: same df temporaly translated
+            time_gap = floor((alignment - 1) * (window_size - 1) / 2) * period
+            df = df.withColumn("Timestamp", df.Timestamp + time_gap)
+
             # 4/ Save result
             # ------------------------------------------------
             # Save the result
             start_saving_time = time.time()
-            short_name = "rollmean_%s" % window_size
+            short_name = "rollmean_%spts" % window_size
 
-            # TODO: put this code into `spark` module
             # Generate the new functional identifier (fid) for the current TS (ts_uid)
             new_fid = gen_fid(tsuid=ts_uid, short_name=short_name)
 
             # OPERATION: Import result by chunk into database, and collect
-            # INPUT: [Timestamp, Value]
-            # OUTPUT: the new ts_uid of the rollmean ts
+            # INPUT: [Timestamp, rollmean]
+            # OUTPUT: the new tsuid of the rollmean ts
             # mapPartition(lambda x:) Here, `x` is iterable object (must be converted into list)
-            rdd = df.rdd.map(lambda x: list(x)) \
+            new_tsuid = df.rdd.map(lambda x: list(x)) \
                 .map(lambda x: (x[0], [[x[1], x[2]]])) \
                 .reduceByKey(lambda a, b: a + b) \
-                .filter(lambda x: x[0] < ed - (window_size * period)) \
-                .map(lambda x: x[1])
-
-            rdd.map(lambda x: _spark_save(fid=new_fid, data=x)).collect()
-
-            # Retrieve ts_uid with new_fid
-            new_tsuid = IkatsApi.fid.tsuid(fid=new_fid)
+                .map(lambda x: x[1]) \
+                .map(lambda x: _spark_save(fid=new_fid, data=x)).collect()[0]
 
             LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                          time.time() - start_saving_time)
+        except Exception:
+            raise
+        finally:
+            SSessionManager.stop()
 
-            result.append({
-                "tsuid": new_tsuid,
-                "funcId": new_fid,
-                "origin": ts_uid
-            })
+        result.append({
+            "tsuid": new_tsuid,
+            "funcId": new_fid,
+            "origin": ts_uid
+        })
 
-        # END FOR (op. on all TS performed)
-
-    except Exception:
-        raise
-    finally:
-        SSessionManager.stop()
+    # END FOR (op. on all TS performed)
 
     return result
 
