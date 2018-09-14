@@ -59,7 +59,7 @@ def gen_ts(ts_id):
     """
 
     # Build TS identifier
-    fid = "UNIT_TEST_Slope_%s" % ts_id
+    fid = "UNIT_TEST_Rollmean_%s" % ts_id
 
     if ts_id == 1:
         ts_content = TS1_DATA
@@ -96,7 +96,8 @@ def gen_ts(ts_id):
     result = IkatsApi.ts.create(fid=fid, data=np.array(ts_content))
     IkatsApi.md.create(tsuid=result['tsuid'], name="qual_ref_period", value=1000, force_update=True)
     IkatsApi.md.create(tsuid=result['tsuid'], name="qual_nb_points", value=len(ts_content), force_update=True)
-    IkatsApi.md.create(tsuid=result['tsuid'], name="metric", value="metric_%s" % ts_id, force_update=True)
+    IkatsApi.md.create(tsuid=result['tsuid'], name="ikats_start_date", value=int(ts_content[0][0]), force_update=True)
+    IkatsApi.md.create(tsuid=result['tsuid'], name="ikats_end_date", value=int(ts_content[-1][0]), force_update=True)
     IkatsApi.md.create(tsuid=result['tsuid'], name="funcId", value="fid_%s" % ts_id, force_update=True)
     if not result['status']:
         raise SystemError("Error while creating TS %s" % ts_id)
@@ -133,34 +134,44 @@ class TestRollmean(unittest.TestCase):
         """
 
         ts_info = gen_ts(1)
+        ts_to_delete = []
 
         try:
 
             window_size = 6
             results_1 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=window_size,
-                                       alignment=Alignment.left, save=False)
-            self.assertEqual(len(results_1), len(TS1_DATA) - window_size + 1)
+                                       alignment=Alignment.left)
+            ts_to_delete.append({'tsuid': results_1[0]})
+            results_1_data = IkatsApi.ts.read(results_1[0])[0]
+            self.assertEqual(len(results_1_data), len(TS1_DATA) - window_size + 1)
 
             window_size = 3
             results_2 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_size=window_size,
-                                       alignment=Alignment.left, save=False)
-            self.assertEqual(len(results_2), len(TS1_DATA) - window_size + 1)
+                                       alignment=Alignment.left)
+            ts_to_delete.append({'tsuid': results_2[0]})
+            results_2_data = IkatsApi.ts.read(results_2[0])[0]
+            self.assertEqual(len(results_2_data), len(TS1_DATA) - window_size + 1)
 
             window_period = 3000
             results_3 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=window_period,
-                                       alignment=Alignment.left, save=False)
-            self.assertEqual(len(results_3), len(TS1_DATA) - window_period / 1000 + 1)
+                                       alignment=Alignment.left)
+            ts_to_delete.append({'tsuid': results_3[0]})
+            results_3_data = IkatsApi.ts.read(results_3[0])[0]
+            self.assertEqual(len(results_3_data), len(TS1_DATA) - window_period / 1000 + 1)
 
             window_period = 6000
             results_4 = rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=window_period,
-                                       alignment=Alignment.left, save=False)
-            self.assertEqual(len(results_4), len(TS1_DATA) - window_period / 1000 + 1)
+                                       alignment=Alignment.left)
+            ts_to_delete.append({'tsuid': results_4[0]})
+            results_4_data = IkatsApi.ts.read(results_4[0])[0]
+            self.assertEqual(len(results_4_data), len(TS1_DATA) - window_period / 1000 + 1)
 
-            self.assertTrue(np.allclose(results_1.data, results_4.data))
+            self.assertTrue(np.array_equal(results_1_data, results_4_data))
 
         finally:
             # Clean up database
             self.clean_up_db([ts_info])
+            self.clean_up_db(ts_to_delete)
 
     @staticmethod
     def clean_up_db(ts_info):
@@ -252,25 +263,48 @@ class TestRollmean(unittest.TestCase):
 
     def test_rollmean_ts_list(self):
         """
-        Testing the the rollmean algorithm from ts list
+        Testing the rollmean algorithm from ts list
         """
 
         ts_info = gen_ts(1)
         try:
             window_size = 10
             results = rollmean_ts_list(ts_list=[ts_info['tsuid']], window_size=window_size,
-                                       alignment=Alignment.left, save=False)
+                                       alignment=Alignment.left)
             self.assertEqual(len(results), 1)
 
         finally:
             # Clean up database
+            self.clean_up_db(results)
             self.clean_up_db([ts_info])
 
     def test_rollmean_ds(self):
         """
         Testing the the rollmean algorithm from dataset
         """
-        window_size = 10
-        results = rollmean_ds(ds_name='Portfolio', window_size=window_size,
-                              alignment=Alignment.left, save=False)
-        self.assertEqual(len(results), 13)
+        # TS used for calculation
+        ts_info = gen_ts(1)
+        tsuid = ts_info['tsuid']
+        IkatsApi.ds.create("ds_test", "", [tsuid])
+
+        try:
+            window_size = 2
+            results = rollmean_ds(ds_name='ds_test', window_size=window_size,
+                                  alignment=Alignment.left)
+            result = IkatsApi.ts.read(results[0]['tsuid'])[0][:, 1]
+
+            self.assertEqual(result[0], 1.5)
+            self.assertEqual(result[1], 6.0)
+            self.assertEqual(result[2], 6.5)
+            self.assertEqual(result[3], 3.5)
+            self.assertEqual(result[4], 4.5)
+            self.assertEqual(result[5], 5.5)
+            self.assertEqual(result[6], 6.5)
+            self.assertEqual(result[7], 7.5)
+            self.assertEqual(result[8], 8.5)
+            self.assertEqual(result[9], 9.5)
+
+        finally:
+            # Clean up database
+            IkatsApi.ds.delete("ds_test", True)
+            self.clean_up_db(results)
