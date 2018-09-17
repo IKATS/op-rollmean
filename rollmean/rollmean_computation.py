@@ -222,7 +222,7 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     if alignment == Alignment.left:
         ts_result_timestamps = ts_data[:len(values) - window_size + 1, 0]
     if alignment == Alignment.center:
-        ts_result_timestamps = ts_data[floor(window_size / 2):floor(window_size / 2) + len(values) - window_size + 1, 0]
+        ts_result_timestamps = ts_data[floor((window_size - 1) / 2):floor((window_size - 1) / 2) + len(values) - window_size + 1, 0]
     if alignment == Alignment.right:
         ts_result_timestamps = ts_data[window_size - 1:len(values), 0]
 
@@ -359,8 +359,8 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     :param nb_points_by_chunk: size of chunks in number of points (assuming timeserie is periodic and without holes)
     :type nb_points_by_chunk: int
 
-    :return: The new TS
-    :rtype: TimestampedMonoVal
+    :return: list of informations about new generated time series
+    :rtype: list
 
     :return:
     """
@@ -381,12 +381,14 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     for ts_uid in ts_list:
 
         md = meta_list[ts_uid]
-        sd = int(md['ikats_start_date'])
-        ed = int(md['ikats_end_date'])
         if 'qual_ref_period' not in md:
             raise ValueError("'qual_ref_period' metadata is missing for %s", IkatsApi.ts.fid(ts_uid))
-
         period = int(float(md['qual_ref_period']))
+        sd = int(md['ikats_start_date'])
+        ed = int(md['ikats_end_date'])
+        ts_size = int(md['qual_nb_points'])
+        if window_size > ts_size:
+            raise ValueError("Window size (%s) too big compared to time serie size (%s)" % (window_size, ts_size))
 
         try:
             # 1/ Get data
@@ -452,7 +454,7 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
                 .map(lambda x: (x[0], [[x[1], x[2]]])) \
                 .reduceByKey(lambda a, b: a + b) \
                 .map(lambda x: x[1]) \
-                .map(lambda x: _spark_save(fid=new_fid, data=x)).collect()[0]
+                .map(lambda x: SparkUtils.save_data(fid=new_fid, data=x)).collect()[0]
 
             LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                          time.time() - start_saving_time)
@@ -470,29 +472,6 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     # END FOR (op. on all TS performed)
 
     return result
-
-
-def _spark_save(fid, data):
-    """
-    Saves a data corresponding to timeseries points to database by providing functional identifier.
-
-    :param fid: functional identifier for the new timeseries
-    :param data: data to save
-
-    :type fid: str
-    :type data: np.array
-
-    :return: the TSUID
-    :rtype: str
-
-    :raises IkatsException: if TS couldn't be created
-    """
-
-    results = IkatsApi.ts.create(fid=fid, data=data, generate_metadata=False, sparkified=True)
-    if results['status']:
-        return results['tsuid']
-    else:
-        raise IkatsException("TS %s couldn't be created" % fid)
 
 
 def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignment.left, nb_points_by_chunk=50000):
