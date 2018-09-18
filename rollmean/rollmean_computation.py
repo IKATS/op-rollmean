@@ -300,6 +300,10 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None,
                                        ts_result=ts_result,
                                        short_name=short_name,
                                        sparkified=False)
+
+    # Inherit from parent
+    IkatsApi.ts.inherit(new_tsuid, tsuid)
+
     LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                  time.time() - start_saving_time)
     return new_tsuid, new_fid
@@ -458,6 +462,10 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
 
             LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                          time.time() - start_saving_time)
+
+            # Inherit from parent
+            IkatsApi.ts.inherit(new_tsuid, ts_uid)
+
         except Exception:
             raise
         finally:
