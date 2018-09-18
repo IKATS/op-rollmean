@@ -264,6 +264,7 @@ class TestRollmean(unittest.TestCase):
         tsuid = ts_info['tsuid']
         IkatsApi.ds.create("ds_test", "", [tsuid])
 
+        results = None
         try:
             window_size = 2
             results = rollmean_ds(ds_name='ds_test', window_size=window_size,
@@ -284,7 +285,8 @@ class TestRollmean(unittest.TestCase):
         finally:
             # Clean up database
             IkatsApi.ds.delete("ds_test", True)
-            self.clean_up_db(results)
+            if results:
+                self.clean_up_db(results)
 
     def test_rollmean_ds_alignement(self):
         """

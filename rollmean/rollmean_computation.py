@@ -26,6 +26,7 @@ from ikats.core.data.ts import TimestampedMonoVal
 from ikats.core.library.exception import IkatsException, IkatsConflictError
 from ikats.core.library.spark import SparkUtils, SSessionManager
 from ikats.core.resource.api import IkatsApi
+from ikats.core.resource.client.temporal_data_mgr import DTYPE
 
 """
 Rollmean Algorithm (also named Sliding window)
@@ -222,7 +223,8 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     if alignment == Alignment.left:
         ts_result_timestamps = ts_data[:len(values) - window_size + 1, 0]
     if alignment == Alignment.center:
-        ts_result_timestamps = ts_data[floor((window_size - 1) / 2):floor((window_size - 1) / 2) + len(values) - window_size + 1, 0]
+        ts_result_timestamps = ts_data[floor((window_size - 1) / 2):floor((window_size - 1) / 2) + len(
+            values) - window_size + 1, 0]
     if alignment == Alignment.right:
         ts_result_timestamps = ts_data[window_size - 1:len(values), 0]
 
@@ -398,8 +400,9 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # 1/ Get data
             # --------------------------------------------------------------------------
             # Import data into dataframe (["Timestamp", "Value"])
-            df = SSessionManager.get_ts_by_chunks_as_df(tsuid=ts_uid, sd=sd, ed=ed, period=period,
-                                                        nb_points_by_chunk=nb_points_by_chunk)
+            df, size = SSessionManager.get_ts_by_chunks_as_df(tsuid=ts_uid, sd=sd, ed=ed, period=period,
+                                                              nb_points_by_chunk=nb_points_by_chunk,
+                                                              overlap=window_size - 1)
 
             # 2/ Choose window
             # ----------------------------
@@ -411,7 +414,7 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # Init window:
             # Order result by Time, for perform a correct rollmean
             # NB: without partitionBy use, all data are processed in a unique partition
-            win = Window.orderBy('Timestamp')
+            win = Window.partitionBy('Index')
 
             # Window frame: starting from 0 (current point), ending at `window_size` not included
             # (rows after the current row)
@@ -428,12 +431,13 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # OPERATION: Drop column "Value"
             # INPUT: Df containing one unique TS [Timestamp, Value, rollmean]
             # OUTPUT: same df with columns [Timestamp, rollmean]
-            df = df.drop("Value")
+            df = df.drop("Value").drop("Index")
 
-            # OPERATION: filter last rows of dataframe for which rollmean was computed on too few points
+            # OPERATION: filter last rows of dataframe (in each partition) for which rollmean was computed on too few points
             # INPUT: Df containing rollmean result [Timestamp, rollmean]
-            # OUTPUT: same df without last unsignificant rows
-            df = df.filter(df.Timestamp <= ed - ((window_size - 1) * period))
+            # OUTPUT: same df without unsignificant rows
+            if window_size > 1:
+                df = df.rdd.mapPartitions(lambda x: list(x)[:len(list(x)) - (window_size - 1)]).toDF()
 
             # OPERATION: Perform required alignement
             # INPUT: Df containing one unique TS [Timestamp, rollmean]
@@ -450,21 +454,44 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # Generate the new functional identifier (fid) for the current TS (ts_uid)
             new_fid = gen_fid(tsuid=ts_uid, short_name=short_name)
 
-            # OPERATION: Import result by chunk into database, and collect
+            # OPERATION: Import result by partition into database, and collect
             # INPUT: [Timestamp, rollmean]
             # OUTPUT: the new tsuid of the rollmean ts
-            # mapPartition(lambda x:) Here, `x` is iterable object (must be converted into list)
-            new_tsuid = df.rdd.map(lambda x: list(x)) \
-                .map(lambda x: (x[0], [[x[1], x[2]]])) \
-                .reduceByKey(lambda a, b: a + b) \
-                .map(lambda x: x[1]) \
-                .map(lambda x: SparkUtils.save_data(fid=new_fid, data=x)).collect()[0]
+            df.rdd.coalesce(size).mapPartitions(lambda x: SparkUtils.save_data(fid=new_fid, data=list(x))).collect()
 
+            new_tsuid = IkatsApi.fid.tsuid(new_fid)
             LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,
                          time.time() - start_saving_time)
 
             # Inherit from parent
             IkatsApi.ts.inherit(new_tsuid, ts_uid)
+
+            # store metadata ikats_start_date, ikats_end_date and qual_nb_points
+            if not IkatsApi.md.create(
+                    tsuid=new_tsuid,
+                    name='ikats_start_date',
+                    value=sd + time_gap,
+                    data_type=DTYPE.date,
+                    force_update=True):
+                LOGGER.error("Metadata ikats_start_date couldn't be saved for TS %s", new_tsuid)
+
+            if not IkatsApi.md.create(
+                    tsuid=new_tsuid,
+                    name='ikats_end_date',
+                    value=ed + time_gap,
+                    data_type=DTYPE.date,
+                    force_update=True):
+                LOGGER.error("Metadata ikats_end_date couldn't be saved for TS %s", new_tsuid)
+
+            # Retrieve imported number of points from database
+            qual_nb_points = IkatsApi.ts.nb_points(tsuid=new_tsuid)
+            if not IkatsApi.md.create(
+                    tsuid=new_tsuid,
+                    name='qual_nb_points',
+                    value=qual_nb_points,
+                    data_type=DTYPE.number,
+                    force_update=True):
+                LOGGER.error("Metadata qual_nb_points couldn't be saved for TS %s", new_tsuid)
 
         except Exception:
             raise
