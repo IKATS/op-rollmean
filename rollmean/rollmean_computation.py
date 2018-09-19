@@ -29,16 +29,16 @@ from ikats.core.resource.api import IkatsApi
 from ikats.core.resource.client.temporal_data_mgr import DTYPE
 
 """
-Rollmean Algorithm (also named Sliding window)
+Rollmean Operator (also named Sliding window)
 """
 
-# Define a logger for this algorithm
+# Define a logger for this operator
 LOGGER = logging.getLogger(__name__)
 
 
 class Alignment(enumerate):
     """
-    Alignment used for Roll mean
+    Alignment used for Rollmean
     """
     left = 1
     center = 2
@@ -49,14 +49,14 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     """
     Compute the rollmean on TS data provided
 
-    This algorithm needs:
+    This operator needs:
         * a TS
-        * a window range (in number of points or in time (ms))
+        * a window range (in number of points)
         * an alignment method for the output
 
     .. warning::
-        The TS must not contain any hole (an interpolation may be applied before calling this algorithm).
-        The result will be altered and may not represent the real behaviour of the rollmean algorithm
+        The TS must not contain any hole (an interpolation may be applied before calling this operator).
+        The result will be altered and may not represent the real behaviour of the rollmean operator
 
     Example:
     ~~~~~~~~
@@ -139,7 +139,7 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
         +---+---+----+----+----+----+----+----+----+----+----+--------+-----------------------+
         | 1 | 3 | 13 | 16 | 20 | 25 | 31 | 38 | 46 | 55 | 65 |        | Original              |
         +---+---+----+----+----+----+----+----+----+----+----+----+---+-----------------------+
-        |       |  1 |  3 | 13 | 16 | 20 | 25 | 31 | 38 | 46 | 55 | 65| Shifted               |
+        |       |  1 |  3 | 13 | 16 | 20 | 25 | 31 | 38 | 46 | 55 | 65| Shifted by K(=2)      |
         +---+---+----+----+----+----+----+----+----+----+----+----+---+-----------------------+
         | 1 | 3 | 12 | 13 |  7 |  9 | 11 | 13 | 15 | 17 | 19 |        | Result of subtraction |
         +---+---+----+----+----+----+----+----+----+----+----+--------+-----------------------+
@@ -155,7 +155,7 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     ``step3 =  [1.5,  6, 6.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]``
 
 
-    :param ts_data: input Timeseries to compute the rollmean on
+    :param ts_data: input time series to compute the rollmean on
     :type ts_data: numpy.array or TimestampedMonoVal
 
     :param window_size: Size of the sliding window (in number of points). Mutually exclusive with window_size
@@ -169,6 +169,7 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
 
     :raise TypeError: Alignment must be taken within Alignment Enumerate
     :raise TypeError: ts_data must be numpy array or TimestampedMonoVal
+    :raise TypeError: window_size is not an integer
     :raise ValueError: window_period and window_size are mutually exclusive
     :raise ValueError: window size must be positive integer
     :raise ValueError: window period must be positive integer
@@ -193,17 +194,13 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     if type(window_size) != int:
         raise TypeError("window_size must be integer")
     if window_size <= 0:
-        raise ValueError("window size must be integer")
+        raise ValueError("window size must be a positive integer")
     if window_size >= len(ts_data):
         raise ValueError("window_size must be lower than TS length")
 
     # Convert to TimestampedMonoVal object (numpy array)
     if type(ts_data) == TimestampedMonoVal:
         ts_data = ts_data.data
-
-    if window_size == 0:
-        LOGGER.error("Window size is too big compared to TS length")
-        raise ValueError("Window size is too big compared to TS length")
 
     if window_size == 1:
         # The result is the original TS if window is equal to 1 point
@@ -213,7 +210,7 @@ def rollmean(ts_data, window_size, alignment=Alignment.center):
     # Work only with values, timestamps are not needed for calculation
     values = ts_data[:, 1]
 
-    # Computation of the roll mean (highly optimized for arithmetic mean)
+    # Computation of the rollmean (highly optimized for arithmetic mean)
     ret = np.cumsum(values, dtype=float)
     ret[window_size:] = ret[window_size:] - ret[:-window_size]
     ts_result_values = ret[window_size - 1:] / window_size
@@ -262,7 +259,8 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None,
     :return: The TSUID and the fid of the new TS
     :rtype: tuple of string
 
-    :raise ValueError: window_period xor window_size must be set
+    :raise ValueError: if neither window_period nor window_size is set
+    :raise ValueError: if window_period and window_size are set
     """
 
     # 0/ input check
@@ -288,7 +286,6 @@ def rollmean_tsuid(tsuid, window_size=None, window_period=None,
 
     # 3/ Compute the rolling mean
     # ------------------------------------------------
-
     start_computing_time = time.time()
     ts_result = rollmean(ts_data=ts_data, window_size=window_size, alignment=alignment)
     LOGGER.debug("TSUID: %s, Computation time: %.3f ms", tsuid, 1000 * (time.time() - start_computing_time))
@@ -362,13 +359,15 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     :param alignment: result alignment (left,right,center), default: center
     :type alignment: int
 
-    :param nb_points_by_chunk: size of chunks in number of points (assuming timeserie is periodic and without holes)
+    :param nb_points_by_chunk: size of chunks in number of points (assuming time series is periodic and without holes)
     :type nb_points_by_chunk: int
 
-    :return: list of informations about new generated time series
+    :return: list of information about new generated time series
     :rtype: list
 
-    :return:
+    :raise ValueError: if neither window_period nor window_size is set
+    :raise ValueError: if both window_period and window_size are set
+    :raise ValueError: if window size is too big compared to time series size
     """
 
     # Input check
@@ -380,12 +379,13 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     # Init result
     result = []
 
-    # Checking metadata availability before starting cutting
+    # Checking metadata availability before starting computation
     meta_list = IkatsApi.md.read(ts_list)
 
     # For each TS to compute
     for ts_uid in ts_list:
 
+        # Review#495: (FTA) The qual_ref_period check is too late (if it happens on the last TS for example, everything before is computed and rejected)
         md = meta_list[ts_uid]
         if 'qual_ref_period' not in md:
             raise ValueError("'qual_ref_period' metadata is missing for %s", IkatsApi.ts.fid(ts_uid))
@@ -394,15 +394,18 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
         ed = int(md['ikats_end_date'])
         ts_size = int(md['qual_nb_points'])
         if window_size > ts_size:
-            raise ValueError("Window size (%s) too big compared to time serie size (%s)" % (window_size, ts_size))
+            raise ValueError("Window size (%s) too big compared to time series size (%s)" % (window_size, ts_size))
 
         try:
             # 1/ Get data
             # --------------------------------------------------------------------------
-            # Import data into dataframe (["Timestamp", "Value"])
+            # Import data into dataframe (["Index", "Timestamp", "Value"])
             df, size = SSessionManager.get_ts_by_chunks_as_df(tsuid=ts_uid, sd=sd, ed=ed, period=period,
                                                               nb_points_by_chunk=nb_points_by_chunk,
                                                               overlap=window_size - 1)
+
+            # Review#495: (FTA) It's unclear to me, the usage of overlap imply something related to inter-chunks but I
+            #             don't see exactly how you solve the duplication problem (
 
             # 2/ Choose window
             # ----------------------------
@@ -412,36 +415,37 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
                 window_size = ceil(window_period / period)
 
             # Init window:
-            # Order result by Time, for perform a correct rollmean
+            # Order result by Time, to perform a correct rollmean
             # NB: without partitionBy use, all data are processed in a unique partition
             win = Window.partitionBy('Index')
 
-            # Window frame: starting from 0 (current point), ending at `window_size` not included
+            # Window frame: starting from 0 (current point), ending at `window_size` excluded
             # (rows after the current row)
             win = win.rowsBetween(Window.currentRow, window_size - 1)
 
             # 3/ Calculate moving average
             # ----------------------------
             # OPERATION: Compute rollmean over `window_size`, put result on 'rollmean' column
-            # INPUT: Df containing one unique TS [Timestamp, Value, index]
-            # OUTPUT: df with new column [Timestamp, Value, index, rollmean]
-            # NB : withColumn repartitions dataframe to a least 200 partitions
+            # INPUT: Df containing one unique TS [Index, Timestamp, Value]
+            # OUTPUT: df with new column [Index, Timestamp, Value, rollmean]
+            # NB: withColumn repartitions dataframe to a least 200 partitions
             df = df.withColumn("rollmean", F.avg("Value").over(win))
 
-            # OPERATION: Drop column "Value"
+            # OPERATION: Drop column "Value" and "Index"
             # INPUT: Df containing one unique TS [Timestamp, Value, rollmean]
             # OUTPUT: same df with columns [Timestamp, rollmean]
             df = df.drop("Value").drop("Index")
 
-            # OPERATION: filter last rows of dataframe (in each partition) for which rollmean was computed on too few points
+            # OPERATION: filter last rows of dataframe (in each partition) for which rollmean
+            #            was computed on too few points
             # INPUT: Df containing rollmean result [Timestamp, rollmean]
             # OUTPUT: same df without unsignificant rows
             if window_size > 1:
                 df = df.rdd.mapPartitions(lambda x: list(x)[:len(list(x)) - (window_size - 1)]).toDF()
 
-            # OPERATION: Perform required alignement
+            # OPERATION: Perform required alignment
             # INPUT: Df containing one unique TS [Timestamp, rollmean]
-            # OUTPUT: same df temporaly translated
+            # OUTPUT: same df temporarily translated
             time_gap = floor((alignment - 1) * (window_size - 1) / 2) * period
             df = df.withColumn("Timestamp", df.Timestamp + time_gap)
 
@@ -525,7 +529,7 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
     :param alignment: result alignment (left,right,center), default: center
     :type alignment: int
 
-    :param nb_points_by_chunk: size of chunks in number of points (assuming timeserie is periodic and without holes)
+    :param nb_points_by_chunk: size of chunks in number of points (assuming time series is periodic and without holes)
     :type nb_points_by_chunk: int
 
     :return: A list of dict composed of original TSUID and the information about the new TS
@@ -542,7 +546,7 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
     # 0/ Check for spark usage
     # ----------------------------------------------------------
 
-    # Check using criterion (nb_points and number of ts)
+    # Check using criteria (nb_points and number of ts)
     if SparkUtils.check_spark_usage(tsuid_list=ts_list,
                                     nb_ts_criteria=100,
                                     nb_points_by_chunk=nb_points_by_chunk):
@@ -557,7 +561,7 @@ def rollmean_ds(ds_name, window_period=None, window_size=None, alignment=Alignme
 
 def get_window_size(tsuid, ts_data, period):
     """
-    Gets the window size (in number of points) corresponding to a specific period for the given tsuid
+    Gets the window size (in number of points) corresponding to a specific period for the given TSUID
 
     :param tsuid: original TSUID used for computation
     :type tsuid: str
@@ -570,6 +574,10 @@ def get_window_size(tsuid, ts_data, period):
 
     :return: the number of points corresponding to the period
     :rtype: int
+
+    :raise ValueError: if window period is not a positive integer
+    :raise ValueError: if window_period is not lower than TS window
+    :raise ValueError: if Window size is too big compared to TS length
     """
     if period is None:
         raise TypeError("Period must be provided")
@@ -590,7 +598,7 @@ def get_window_size(tsuid, ts_data, period):
 
     # If no meta data has been found (or if error occurred)
     # Count the number manually
-    LOGGER.debug("qual_ref_period metadata not found for tsuid:%s", tsuid)
+    LOGGER.debug("qual_ref_period metadata not found for TSUID:%s", tsuid)
 
     # Calculation of effective window size by parsing each date until it founds the period
     for i, _ in enumerate(ts_data):
@@ -631,13 +639,12 @@ def save_rollmean(tsuid, ts_result, short_name="rollmean", sparkified=False):
         # Generate new FID
         new_fid = gen_fid(tsuid=tsuid, short_name=short_name)
 
-        # Import timeseries result in database
+        # Import time series result in database
         res_import = IkatsApi.ts.create(fid=new_fid,
                                         data=ts_result.data,
                                         generate_metadata=True,
                                         parent=tsuid,
-                                        sparkified=sparkified
-                                        )
+                                        sparkified=sparkified)
         return res_import['tsuid'], new_fid
 
     except Exception:
@@ -647,8 +654,8 @@ def save_rollmean(tsuid, ts_result, short_name="rollmean", sparkified=False):
 def gen_fid(tsuid, short_name="rollmean"):
     """
     Generate a new functional identifier (fid) for current TS (`tsuid`).
-    Return new fid (`previous_fid`_`short_name`). If already exist, create new fid
-    (`previous_fid`_`short_name`_`time * 1000`).
+    Return new fid (`original_fid`_`short_name`). If already exist, create new fid
+    (`original_fid`_`short_name`_`time * 1000`).
 
     :param tsuid: original TSUID used for computation
     :type tsuid: str
@@ -659,10 +666,10 @@ def gen_fid(tsuid, short_name="rollmean"):
     :return: The new fid of the TS to create.
     :rtype: str
     """
-    # Retrieve timeseries information (funcId)
+    # Retrieve time series information (funcId)
     original_fid = IkatsApi.ts.fid(tsuid=tsuid)
 
-    # Generate unique functional id for resulting timeseries
+    # Generate unique functional id for resulting time series
     new_fid = '%s_%s' % (str(original_fid), short_name)
     try:
         IkatsApi.ts.create_ref(new_fid)

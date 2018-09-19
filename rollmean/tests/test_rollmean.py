@@ -92,7 +92,7 @@ def gen_ts(ts_id):
     else:
         raise NotImplementedError
 
-    # Create the timeseries
+    # Create the time series
     result = IkatsApi.ts.create(fid=fid, data=np.array(ts_content))
     IkatsApi.md.create(tsuid=result['tsuid'], name="qual_ref_period", value=1000, force_update=True)
     IkatsApi.md.create(tsuid=result['tsuid'], name="qual_nb_points", value=len(ts_content), force_update=True)
@@ -107,12 +107,12 @@ def gen_ts(ts_id):
 
 class TestRollmean(unittest.TestCase):
     """
-    Test the rollmean algorithm
+    Test the rollmean operator
     """
 
     def test_rollmean_value(self):
         """
-        Testing the result values of the rollmean algorithm
+        Testing the result values of the rollmean operator
         """
         window_size = 2
         results = rollmean(TS1_DATA, window_size=window_size, alignment=Alignment.left)
@@ -130,7 +130,7 @@ class TestRollmean(unittest.TestCase):
 
     def test_rollmean_window(self):
         """
-        Testing the window size and period options of the rollmean algorithm
+        Testing the window size and period options of the rollmean operator
         """
 
         ts_info = gen_ts(1)
@@ -186,7 +186,7 @@ class TestRollmean(unittest.TestCase):
     # noinspection PyTypeChecker
     def test_rollmean_robustness(self):
         """
-        Testing the robustness cases of the rollmean algorithm
+        Testing the robustness cases of the rollmean operator
         """
 
         ts_info = gen_ts(1)
@@ -212,15 +212,15 @@ class TestRollmean(unittest.TestCase):
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size='ttrtr', alignment=Alignment.left)
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_size='wrong_type', alignment=Alignment.left)
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period='ttrtr', alignment=Alignment.left)
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period='wrong_type', alignment=Alignment.left)
 
             # wrong type
             with self.assertRaises(TypeError):
-                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=500, alignment="wrong")
+                rollmean_tsuid(tsuid=ts_info['tsuid'], window_period=500, alignment="wrong_type")
 
             # wrong value
             with self.assertRaises(TypeError):
@@ -240,7 +240,7 @@ class TestRollmean(unittest.TestCase):
 
     def test_rollmean_ts_list(self):
         """
-        Testing the rollmean algorithm from ts list
+        Testing the rollmean operator from ts list
         """
 
         ts_info = gen_ts(1)
@@ -257,7 +257,7 @@ class TestRollmean(unittest.TestCase):
 
     def test_rollmean_ds_spark(self):
         """
-        Testing the  rollmean algorithm from dataset
+        Testing the rollmean operator from dataset
         """
         # TS used for calculation
         ts_info = gen_ts(1)
@@ -288,10 +288,13 @@ class TestRollmean(unittest.TestCase):
             if results:
                 self.clean_up_db(results)
 
-    def test_rollmean_ds_alignement(self):
+    def test_rollmean_ds_alignment(self):
         """
-        Testing the  rollmean algorithm from dataset / alignement functionality
+        Testing the rollmean operator from dataset / alignment functionality
         """
+
+        # Review#495: Test KO
+
         # TS used for calculation
         ts_info = gen_ts(1)
         tsuid = ts_info['tsuid']
@@ -348,7 +351,7 @@ class TestRollmean(unittest.TestCase):
     # noinspection PyTypeChecker
     def test_spark_rollmean_robustness(self):
         """
-        Testing the robustness cases of the rollmean algorithm
+        Testing the robustness cases of the rollmean operator
         """
 
         # TS used for calculation
@@ -360,9 +363,8 @@ class TestRollmean(unittest.TestCase):
             # window_size > ts size
             with self.assertRaises(ValueError):
                 rollmean_ds(ds_name='ds_test', window_size=12,
-                                      alignment=Alignment.left, nb_points_by_chunk=5)
+                            alignment=Alignment.left, nb_points_by_chunk=5)
 
         finally:
             # Clean up database
             IkatsApi.ds.delete("ds_test", True)
-
