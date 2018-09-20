@@ -382,19 +382,33 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
     # Checking metadata availability before starting computation
     meta_list = IkatsApi.md.read(ts_list)
 
-    # For each TS to compute
+    # check required metadata
     for ts_uid in ts_list:
 
-        # Review#495: (FTA) The qual_ref_period check is too late (if it happens on the last TS for example, everything before is computed and rejected)
         md = meta_list[ts_uid]
         if 'qual_ref_period' not in md:
             raise ValueError("'qual_ref_period' metadata is missing for %s", IkatsApi.ts.fid(ts_uid))
+        ts_size = int(md['qual_nb_points'])
+
+        # processing window_size from window_period (if not provided)
+        if window_period:
+            # Get the size of the window (in nb_points) corresponding to the `window_period` provided
+            window_size = ceil(window_period / int(float(md['qual_ref_period'])))
+        meta_list[ts_uid]['window_size'] = window_size
+
+        if window_size > ts_size:
+            raise ValueError(
+                "Window size (%s) too big compared to time series size (%s) for %s" % (
+                    window_size, ts_size, IkatsApi.ts.fid(ts_uid)))
+
+    # For each TS to compute
+    for ts_uid in ts_list:
+
+        md = meta_list[ts_uid]
         period = int(float(md['qual_ref_period']))
         sd = int(md['ikats_start_date'])
         ed = int(md['ikats_end_date'])
-        ts_size = int(md['qual_nb_points'])
-        if window_size > ts_size:
-            raise ValueError("Window size (%s) too big compared to time series size (%s)" % (window_size, ts_size))
+        window_size = int(md['window_size'])
 
         try:
             # 1/ Get data
@@ -403,16 +417,6 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             df, size = SSessionManager.get_ts_by_chunks_as_df(tsuid=ts_uid, sd=sd, ed=ed, period=period,
                                                               nb_points_by_chunk=nb_points_by_chunk,
                                                               overlap=window_size - 1)
-
-            # Review#495: (FTA) It's unclear to me, the usage of overlap imply something related to inter-chunks but I
-            #             don't see exactly how you solve the duplication problem (
-
-            # 2/ Choose window
-            # ----------------------------
-            # Define the window size
-            if window_period:
-                # Get the size of the window (in nb_points) corresponding to the `window_period` provided
-                window_size = ceil(window_period / period)
 
             # Init window:
             # Order result by Time, to perform a correct rollmean
@@ -436,13 +440,6 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # OUTPUT: same df with columns [Timestamp, rollmean]
             df = df.drop("Value").drop("Index")
 
-            # OPERATION: filter last rows of dataframe (in each partition) for which rollmean
-            #            was computed on too few points
-            # INPUT: Df containing rollmean result [Timestamp, rollmean]
-            # OUTPUT: same df without unsignificant rows
-            if window_size > 1:
-                df = df.rdd.mapPartitions(lambda x: list(x)[:len(list(x)) - (window_size - 1)]).toDF()
-
             # OPERATION: Perform required alignment
             # INPUT: Df containing one unique TS [Timestamp, rollmean]
             # OUTPUT: same df temporarily translated
@@ -458,10 +455,25 @@ def spark_rollmean_tslist(ts_list, window_size=None, window_period=None, alignme
             # Generate the new functional identifier (fid) for the current TS (ts_uid)
             new_fid = gen_fid(tsuid=ts_uid, short_name=short_name)
 
-            # OPERATION: Import result by partition into database, and collect
-            # INPUT: [Timestamp, rollmean]
-            # OUTPUT: the new tsuid of the rollmean ts
-            df.rdd.coalesce(size).mapPartitions(lambda x: SparkUtils.save_data(fid=new_fid, data=list(x))).collect()
+            if window_size > 1:
+
+                # OPERATION: filter last unsignificant dataframe rows (in each partition)
+                #            for which rollmean was computed on too few points
+                # INPUT: Df containing rollmean result [Timestamp, rollmean]
+                # OUTPUT: same df without unsignificant rows
+                rdd = df.rdd.mapPartitions(lambda x: list(x)[:len(list(x)) - (window_size - 1)])
+
+                # OPERATION: Import result by partition into database, and collect
+                # INPUT: [Timestamp, rollmean]
+                # OUTPUT: the new tsuid of the rollmean ts (not used)
+                rdd.mapPartitions(lambda x: SparkUtils.save_data(fid=new_fid, data=list(x))).collect()
+
+            else:
+
+                # OPERATION: Import result by partition into database, and collect
+                # INPUT: [Timestamp, rollmean]
+                # OUTPUT: the new tsuid of the rollmean ts
+                df.rdd.mapPartitions(lambda x: SparkUtils.save_data(fid=new_fid, data=list(x))).collect()
 
             new_tsuid = IkatsApi.fid.tsuid(new_fid)
             LOGGER.debug("TSUID: %s(%s), Result import time: %.3f seconds", new_fid, new_tsuid,

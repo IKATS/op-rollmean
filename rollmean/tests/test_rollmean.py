@@ -293,8 +293,6 @@ class TestRollmean(unittest.TestCase):
         Testing the rollmean operator from dataset / alignment functionality
         """
 
-        # Review#495: Test KO
-
         # TS used for calculation
         ts_info = gen_ts(1)
         tsuid = ts_info['tsuid']

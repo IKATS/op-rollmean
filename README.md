@@ -2,9 +2,6 @@
 
 This IKATS operator implements a *moving average*.
 
-Review#495 (FTA): This sentence is wrong
-A resample can be performed if requested.
-
 ## Input and parameters
 
 This operator only takes one input of the functional type `DS_name`.
@@ -37,11 +34,8 @@ This operator needs:
 ### Warnings
 
 - the TS must not contain any hole (an interpolation may be applied before calling this operator)
-- the result will be altered and may not represent the real behaviour of the rollmean operator
+- in that case, the result will be altered and may not represent the real behaviour of the rollmean operator
 - the metadata `qual_ref_period` shall be defined for all time series of the dataset (can be performed by *Quality Indicators* operator)
-
- #Review#495: (FTA) "the result will be altered". Such a sentence is pretty scary! explain
- #Review#495: (FTA) i don't see any explanation about the ceil action when window period doesn't match an exact number of points
 
 ### Consideration about alignment
 
